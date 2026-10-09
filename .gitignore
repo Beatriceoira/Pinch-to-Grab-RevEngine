@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDEs / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Lab 2 runtime output (regenerate by running the script)
+lab2_events.csv
+lab2_snapshots.csv
+lab2_shot_*.png
+
