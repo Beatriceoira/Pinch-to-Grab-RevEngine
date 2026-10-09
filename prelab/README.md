@@ -61,7 +61,7 @@ Run it from your project folder, because the log files are written to the curren
 
 ## Configuration
 
-Edit the constants at the top of `prelab2_dragrect.py`:
+Edit the constants at the top of `prelab.py`:
 
 | Constant | Default | Meaning |
 |----------|---------|---------|
