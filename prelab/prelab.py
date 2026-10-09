@@ -4,7 +4,8 @@ PRE-LABORATORY 2 - Pinch-to-grab DragRect engine (OpenCV + CVZone)
 
 Keys:  c = new rectangle   g = grid on/off   u = unlock all
        p = write snapshot row to lab2_snapshots.csv (raw values for worked examples)
-       s = save screenshot  q = quit
+       s = save screenshot  q or x = quit
+       Point (open hand) at a locked rectangle for UNLOCK_TIME seconds to unlock it
 Log files (appended, timestamps relative to program start):
        lab2_events.csv     state changes / errors  -> use for test-case timestamps
        lab2_snapshots.csv  full-precision values   -> use for manual verification
@@ -35,6 +36,7 @@ SNAP_TOL = 25.0        # px: snap only if snap error <= this
 DWELL_TIME = 1.5       # s: hold still this long while grabbed -> lock
 DWELL_RADIUS = 15.0    # px: cursor must stay within this of dwell anchor
 DWELL_SPEED = 120.0    # px/s: must also be slower than this
+UNLOCK_TIME = 1.5      # s: point at a locked rectangle (hand open) this long to unlock
 MAX_OVERLAP_PCT = 0.0  # % overlap allowed on drop (0 = no overlap allowed)
 FLASH_TIME = 0.4       # s: how long RELEASED / INVALID is shown
 MAX_READ_FAILS = 50    # consecutive failed frame reads before clean exit
@@ -75,6 +77,7 @@ class DragRect:
         self.posCenter = [float(pos_center[0]), float(pos_center[1])]
         self.size = [float(size[0]), float(size[1])]
         self.locked = False
+        self.unlock_ready = True   # False right after locking until the cursor leaves
 
     @property
     def bounds(self):
@@ -170,6 +173,8 @@ def resolve_drop(rect, start_center, rects, grid_on, W, H):
         return False, snapped, err
     return True, snapped, err
 
+
+# ----------------------------------------------------------------- MOTION
 class Motion:
     """Smoothed cursor, displacement, velocity, speed, acceleration."""
 
@@ -215,6 +220,8 @@ class Motion:
         self.p, self.t = (sx, sy), t
         return self.p
 
+
+# ----------------------------------------------------------------- LOGGING
 class Logger:
     def __init__(self, t0):
         self.t0 = t0
@@ -251,6 +258,8 @@ class Logger:
             if f:
                 f.close()
 
+
+# ----------------------------------------------------------------- CAMERA
 def open_camera():
     for idx in range(5):
         cap = cv2.VideoCapture(idx)
@@ -262,6 +271,8 @@ def open_camera():
         cap.release()
     return None
 
+
+# ----------------------------------------------------------------- DRAWING
 def f(v, spec=".1f"):
     return "-" if v is None else format(v, spec)
 
@@ -284,7 +295,7 @@ def draw_panel(out, info, H):
         f"Grid {'ON' if info['grid_on'] else 'OFF'} g={GRID_SIZE} cell=({f(info['grid_x'], '.0f')},{f(info['grid_y'], '.0f')}) "
         f"snap err={f(info['snap_err'])} px",
         f"Dwell {f(info['dwell'], '.2f')} / {DWELL_TIME:.1f} s    FPS {info['fps']:.0f}",
-        "c new | g grid | u unlock | p snapshot | s shot | q quit",
+        "c new | g grid | u unlock | p snap | s shot | q/x quit",
     ]
     lh = 22
     h = lh * len(lines) + 12
@@ -295,12 +306,15 @@ def draw_panel(out, info, H):
     for i, ln in enumerate(lines):
         put(out, ln, (x0 + 8, y0 + 20 + i * lh), 0.5)
 
+
+# ----------------------------------------------------------------- MAIN
 def main():
     cap = open_camera()
     if cap is None:
         print("ERROR: No webcam found. Check that it is connected and not used by another app.")
         return 1
 
+    # learn the real frame size so the workspace matches the camera
     W, H = FRAME_W, FRAME_H
     for _ in range(10):
         ok, probe = cap.read()
@@ -308,7 +322,7 @@ def main():
             H, W = probe.shape[:2]
             break
 
-    rs = min(200, W // 6, H // 3)                       
+    rs = min(200, W // 6, H // 3)                       # rectangle size
     gap = (W - rs - 100) / 4
     rects = [DragRect([rs / 2 + 50 + i * gap, rs / 2 + 50], (rs, rs)) for i in range(5)]
 
@@ -328,6 +342,7 @@ def main():
     lost_since = None
     dwell_anchor, dwell_t0, dwell_t = None, 0.0, 0.0
     grid_on = True
+    unlock_obj, unlock_t0, unlock_t = None, 0.0, 0.0
     last_create = 0.0
     fails = 0
     msg, msg_until = "", 0.0
@@ -340,6 +355,7 @@ def main():
         valid, snapped, err = resolve_drop(rect, start_center, rects, grid_on, W, H)
         if valid and lock:
             rect.locked = True
+            rect.unlock_ready = False
         flash_obj = rect
         state = RELEASED if valid else INVALID
         state_until = now + FLASH_TIME
@@ -358,7 +374,7 @@ def main():
                 if fails == 1 or fails % 10 == 0:
                     log.event(f"camera read failed ({fails})")
                 key = cv2.waitKey(100) & 0xFF
-                if key == ord('q') or fails >= MAX_READ_FAILS:
+                if key in (ord('q'), ord('x')) or fails >= MAX_READ_FAILS:
                     break
                 continue
             fails = 0
@@ -376,9 +392,11 @@ def main():
                 hands, hand_status = [], "DETECTOR ERROR"
                 log.event(f"detector error: {e}")
 
+            # expire RELEASED / INVALID flash
             if state in (RELEASED, INVALID) and now >= state_until:
                 state, flash_obj = IDLE, None
 
+            # ---- landmarks -> raw cursor + pinch distance
             raw, pinch_d, thumb = None, None, None
             if hands:
                 lm = hands[0].get("lmList", [])
@@ -402,7 +420,9 @@ def main():
             dwell_active = False
 
             if raw is None:
+                # ---------------- hand lost / unusable
                 motion.reset()
+                unlock_obj, unlock_t = None, 0.0
                 if selected is not None:
                     if lost_since is None:
                         lost_since = now
@@ -414,6 +434,7 @@ def main():
                 elif state not in (RELEASED, INVALID):
                     state = IDLE
             else:
+                # ---------------- hand present
                 lost_since = None
                 cursor = motion.update(raw, now)
                 if motion.gap:
@@ -467,6 +488,7 @@ def main():
                                 log.event(f"collision flagged: #{selected.id} overlaps #{col[0].id} "
                                           f"({col[4]:.1f}%)")
                             state = new_state
+                        # dwell-to-lock: must be still AND in a valid spot
                         moved = (dwell_anchor is None
                                  or dist(cursor, dwell_anchor) > DWELL_RADIUS
                                  or motion.speed > DWELL_SPEED)
@@ -478,6 +500,23 @@ def main():
                             release("dwell lock", lock=True)
                             dwell_active = False
 
+                # unlock by pointing: open hand, fingertip held over a locked rectangle
+                for r in rects:
+                    if r.locked and not r.unlock_ready and r is not hover_obj:
+                        r.unlock_ready = True        # cursor has left since it was locked
+                if (selected is None and hover_obj is not None and hover_obj.locked
+                        and hover_obj.unlock_ready and not pinching):
+                    if unlock_obj is not hover_obj:
+                        unlock_obj, unlock_t0 = hover_obj, now
+                    unlock_t = now - unlock_t0
+                    if unlock_t >= UNLOCK_TIME:
+                        hover_obj.locked = False
+                        log.event(f"unlock by pointing: #{hover_obj.id}")
+                        unlock_obj, unlock_t = None, 0.0
+                else:
+                    unlock_obj, unlock_t = None, 0.0
+
+            # ---------------- keys
             if key == ord('c') and now - last_create > 0.3:        # debounce duplicates
                 last_create = now
                 target = cursor if cursor else (W / 2, H / 2)
@@ -498,6 +537,7 @@ def main():
                     r.locked = False
                 log.event(f"unlocked {n} rectangle(s)")
 
+            # ---------------- info for panel / snapshot
             pobj = selected or flash_obj or hover_obj
             col = worst_collision(pobj, rects) if pobj else None
             info = dict(
@@ -534,6 +574,7 @@ def main():
                 log.event("snapshot written to lab2_snapshots.csv")
                 msg, msg_until = "Snapshot saved", now + 1.0
 
+            # ---------------- draw
             if grid_on:
                 for gx in range(0, W + 1, GRID_SIZE):
                     for gy in range(0, H + 1, GRID_SIZE):
@@ -572,6 +613,10 @@ def main():
                 if dwell_active and dwell_t > 0.05:
                     cv2.ellipse(out, ci, (24, 24), 0, 0, 360 * min(dwell_t / DWELL_TIME, 1.0),
                                 (0, 215, 255), 4)
+                if unlock_obj is not None and unlock_t > 0.05:
+                    cv2.ellipse(out, ci, (32, 32), 0, 0, 360 * min(unlock_t / UNLOCK_TIME, 1.0),
+                                (255, 255, 255), 4)
+                    put(out, "UNLOCKING", (ci[0] + 38, ci[1] + 6), 0.5, (255, 255, 255))
 
             if now < msg_until:
                 put(out, msg, (W // 2 - 180, 30), 0.7, (0, 215, 255), 2)
@@ -583,8 +628,8 @@ def main():
                 log.event(f"screenshot saved: {name}")
 
             cv2.imshow("Image", out)
-            if key == ord('q'):
-                log.event("q pressed: exiting")
+            if key in (ord('q'), ord('x')):
+                log.event(f"{chr(key)} pressed: exiting")
                 break
     finally:
         cap.release()
@@ -595,3 +640,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+

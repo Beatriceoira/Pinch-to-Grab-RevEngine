@@ -57,6 +57,7 @@ Run it from your project folder, because the log files are written to the curren
 3. Drag: move your hand while pinching.
 4. Release: open the pinch (above the release threshold).
 5. Lock: hold still while grabbed until the timer ring completes. Press `u` to unlock.
+6. Unlock: One can also unlock by hovering the index on a locked shape.
 
 ## Configuration
 
