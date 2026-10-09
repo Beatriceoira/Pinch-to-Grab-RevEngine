@@ -34,7 +34,7 @@ On macOS, allow camera access for your terminal or IDE when prompted.
 ## Run
 
 ```bash
-python prelab2.py
+python prelab/prelab2.py
 ```
 
 Run it from your project folder, because the log files are written to the current directory.
